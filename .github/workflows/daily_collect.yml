@@ -3,7 +3,12 @@ name: UMS 통계 수집
 on:
   schedule:
     - cron: "0 21 * * *"   # 매일 06:00 KST (= 21:00 UTC 전날)
-  workflow_dispatch:         # 수동 실행 지원
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: "수집 대상 일자 (YYYY-MM-DD, 비우면 KST 전일)"
+        required: false
+        type: string
 
 jobs:
   collect:
@@ -31,6 +36,7 @@ jobs:
           ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
           GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+          TARGET_DATE: ${{ inputs.target_date }}
         run: python collect_stats.py
 
       - name: 디버그 스크린샷 업로드

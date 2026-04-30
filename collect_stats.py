@@ -10,6 +10,7 @@ import json
 import os
 import re
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -27,6 +28,8 @@ GCP_SCOPES     = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
+REPORT_TZ      = ZoneInfo("Asia/Seoul")
+TARGET_DATE    = os.environ.get("TARGET_DATE")
 
 
 # ── Google Sheets ─────────────────────────────────────────────────────────────
@@ -37,21 +40,108 @@ def get_worksheet():
     return gc.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
 
-# ── 로그인 ────────────────────────────────────────────────────────────────────
-async def login(page: Page) -> None:
-    await page.goto(LOGIN_URL, wait_until="networkidle")
+def resolve_target_date() -> str:
+    if TARGET_DATE:
+        try:
+            return datetime.strptime(TARGET_DATE, "%Y-%m-%d").strftime("%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError(
+                f"TARGET_DATE 형식이 올바르지 않습니다: {TARGET_DATE} (예: 2026-04-30)"
+            ) from exc
+    return (datetime.now(REPORT_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
 
+def upsert_rows(ws, rows: list[list]) -> None:
+    if not rows:
+        return
+
+    existing_values = ws.get_all_values()
+    existing_map: dict[tuple[str, str], int] = {}
+
+    for idx, row in enumerate(existing_values, start=1):
+        if len(row) < 2:
+            continue
+        date_value = row[0].strip()
+        customer_value = row[1].strip()
+        if (date_value, customer_value) == ("date", "customer"):
+            continue
+        if not date_value or not customer_value:
+            continue
+        existing_map[(date_value, customer_value)] = idx
+
+    updates = []
+    appends = []
+
+    for row in rows:
+        key = (str(row[0]).strip(), str(row[1]).strip())
+        row_index = existing_map.get(key)
+        if row_index:
+            updates.append({"range": f"A{row_index}:E{row_index}", "values": [row]})
+        else:
+            appends.append(row)
+
+    if updates:
+        ws.batch_update(updates, value_input_option="USER_ENTERED")
+
+    if appends:
+        ws.append_rows(appends, value_input_option="USER_ENTERED")
     for sel in [
         'input[name="email"]', 'input[type="email"]',
         'input[name="loginId"]', 'input[name="id"]', '#email',
     ]:
-        if await page.locator(sel).count():
-            await page.locator(sel).first.fill(ADMIN_EMAIL)
+        loc = page.locator(sel)
+        if await loc.count():
+            await loc.first.fill(ADMIN_EMAIL)
+            filled = True
+            print(f"  이메일 입력: {sel}")
             break
 
-    await page.locator('input[type="password"]').first.fill(ADMIN_PW)
-    await page.keyboard.press("Enter")
+    if not filled:
+        print("  [ERROR] 이메일 입력 필드를 찾지 못함")
+        return False
+
+    pw_loc = page.locator('input[type="password"]')
+    if not await pw_loc.count():
+        print("  [ERROR] 비밀번호 입력 필드를 찾지 못함")
+        return False
+    await pw_loc.first.fill(ADMIN_PW)
+
+    # 제출: 버튼 클릭 우선, fallback Enter
+    submitted = False
+    for sel in [
+        'button[type="submit"]', 'button:has-text("로그인")',
+        'button:has-text("LOGIN")', 'input[type="submit"]',
+    ]:
+        btn = page.locator(sel)
+        if await btn.count():
+            await btn.first.click()
+            submitted = True
+            print(f"  로그인 버튼 클릭: {sel}")
+            break
+    if not submitted:
+        await page.keyboard.press("Enter")
+        print("  Enter 키로 제출")
+
+    # 페이지 전환 대기 (최대 10초)
+    try:
+        await page.wait_for_url(lambda url: "login" not in url, timeout=10_000)
+    except Exception:
+        pass
     await page.wait_for_load_state("networkidle")
+    await page.wait_for_timeout(2000)
+
+    print(f"  로그인 후 URL: {page.url}")
+    return "login" not in page.url.lower()
+
+
+async def login(page: Page) -> None:
+    ok = await do_login(page)
+    if not ok:
+        # 한 번 더 시도
+        print("  로그인 재시도...")
+        ok = await do_login(page)
+    if not ok:
+        await page.screenshot(path="debug_login_fail.png")
+        raise RuntimeError(f"로그인 실패. URL: {page.url}")
     print("  로그인 완료")
 
 
@@ -287,13 +377,44 @@ async def debug_snapshot(page: Page, tag: str) -> None:
     print(f"[DEBUG:{tag}] HTML(4000):\n{html}")
 
 
+# ── 통계 페이지 이동 (SPA 내부 라우팅 우선) ──────────────────────────────────
+async def navigate_to_stats(page: Page) -> None:
+    # SPA 내부 링크 클릭 시도
+    for sel in [
+        'a[href*="statistics"]', 'a:has-text("통계")',
+        'a:has-text("실시간")', '[class*="nav"] a[href*="stat"]',
+    ]:
+        links = page.locator(sel)
+        if await links.count():
+            try:
+                await links.first.click()
+                await page.wait_for_load_state("networkidle")
+                await page.wait_for_timeout(1000)
+                if "login" not in page.url.lower():
+                    print(f"  SPA 링크로 이동 성공: {page.url}")
+                    return
+            except Exception:
+                pass
+
+    # 직접 이동
+    await page.goto(STATS_URL, wait_until="networkidle")
+    await page.wait_for_timeout(2000)
+    print(f"  goto 이동 후 URL: {page.url}")
+
+    # 세션 만료 시 재로그인 후 재시도
+    if "login" in page.url.lower():
+        print("  세션 만료 감지, 재로그인...")
+        await login(page)
+        await page.goto(STATS_URL, wait_until="networkidle")
+        await page.wait_for_timeout(2000)
+        if "login" in page.url.lower():
+            raise RuntimeError(f"재로그인 후에도 통계 페이지 접근 불가: {page.url}")
+
+
 # ── 수집 메인 로직 ────────────────────────────────────────────────────────────
 async def collect_all(page: Page, yesterday: str) -> list[dict]:
-    await page.goto(STATS_URL, wait_until="networkidle")
-    await page.wait_for_timeout(1_500)
-
+    await navigate_to_stats(page)
     await debug_snapshot(page, "stats_page")
-
     ok = await click_option(page, "메시지 유형", "알림톡")
     if not ok:
         raise RuntimeError("'메시지 유형' 알림톡 선택 실패")
@@ -311,26 +432,32 @@ async def collect_all(page: Page, yesterday: str) -> list[dict]:
         print(f"  처리 중: {customer['text']}")
 
         for success_type in ["선택", "성공"]:
-            await click_option(page, "메시지 유형", "알림톡")
+            ok = await click_option(page, "메시지 유형", "알림톡")
+            if not ok:
+                raise RuntimeError(f"{customer['text']} 처리 중 '메시지 유형=알림톡' 재선택 실패")
             await page.wait_for_timeout(200)
 
             ctype = customer.get("type", "native")
             if ctype == "native":
+                customer_index = customer.get("index")
+                if customer_index is None:
+                    raise RuntimeError(f"{customer['text']} 고객사 select index 누락")
                 selects = page.locator("select")
-                for i in range(await selects.count()):
-                    s = selects.nth(i)
-                    opts = await s.locator("option").all_text_contents()
-                    if customer["text"] in [o.strip() for o in opts]:
-                        await s.select_option(value=customer["value"])
-                        break
+                if await selects.count() <= customer_index:
+                    raise RuntimeError(f"{customer['text']} 고객사 select index 범위 초과")
+                await selects.nth(customer_index).select_option(value=customer["value"])
             else:
-                await click_option(page, "고객사", customer["text"])
+                ok = await click_option(page, "고객사", customer["text"])
+                if not ok:
+                    raise RuntimeError(f"{customer['text']} 고객사 선택 실패")
             await page.wait_for_timeout(200)
 
             await set_date_range(page, yesterday)
             await page.wait_for_timeout(200)
 
-            await click_option(page, "성공여부", success_type)
+            ok = await click_option(page, "성공여부", success_type)
+            if not ok:
+                raise RuntimeError(f"{customer['text']} 처리 중 성공여부 '{success_type}' 선택 실패")
             await page.wait_for_timeout(200)
 
             await click_search(page)
@@ -353,8 +480,9 @@ async def collect_all(page: Page, yesterday: str) -> list[dict]:
 
 # ── 진입점 ────────────────────────────────────────────────────────────────────
 async def async_main() -> None:
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    print(f"[UMS 통계 수집] 대상 일자: {yesterday}")
+    yesterday = resolve_target_date()
+    source = "TARGET_DATE" if TARGET_DATE else "KST 전일 자동 계산"
+    print(f"[UMS 통계 수집] 대상 일자: {yesterday} ({source})")
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
@@ -384,8 +512,8 @@ async def async_main() -> None:
         rows.append([d["date"], d["customer"], total, success, rate])
 
     if rows:
-        ws.append_rows(rows, value_input_option="USER_ENTERED")
-        print(f"[완료] {len(rows)}행 Google Sheets 적재 완료")
+        upsert_rows(ws, rows)
+        print(f"[완료] {len(rows)}행 Google Sheets 업서트 완료")
     else:
         print("[완료] 적재할 데이터 없음")
 
