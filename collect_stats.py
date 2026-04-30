@@ -87,7 +87,7 @@ def upsert_rows(ws, rows: list[list]) -> None:
 
 
 # ── 로그인 ────────────────────────────────────────────────────────────────────
-async def login(page: Page) -> None:
+async def do_login(page: Page) -> bool:
     await page.goto(LOGIN_URL, wait_until="networkidle")
     await page.wait_for_timeout(1000)
     print(f"  로그인 페이지 URL: {page.url}")
