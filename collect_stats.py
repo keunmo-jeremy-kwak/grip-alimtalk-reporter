@@ -95,7 +95,8 @@ async def do_login(page: Page) -> bool:
     filled = False
     for sel in [
         'input[name="email"]', 'input[type="email"]',
-        'input[name="loginId"]', 'input[name="id"]', '#email',
+        'input[name="loginId"]', 'input[name="userId"]',
+        'input[name="id"]', '#email',
     ]:
         loc = page.locator(sel)
         if await loc.count():
@@ -108,7 +109,7 @@ async def do_login(page: Page) -> bool:
         print("  [ERROR] 이메일 입력 필드를 찾지 못함")
         return False
 
-    pw_loc = page.locator('input[type="password"]')
+    pw_loc = page.locator('input[name="userPassword"], input[type="password"]')
     if not await pw_loc.count():
         print("  [ERROR] 비밀번호 입력 필드를 찾지 못함")
         return False
