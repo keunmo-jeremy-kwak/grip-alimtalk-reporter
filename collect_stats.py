@@ -228,7 +228,7 @@ async def click_option(page: Page, label_keyword: str, option_text: str) -> bool
         txt = (await lb.text_content() or "").strip()
         if label_keyword not in txt:
             continue
-        for ancestor_level in range(1, 5):
+        for ancestor_level in range(1, 9):
             xpath = "xpath=ancestor::*[" + str(ancestor_level) + "]"
             container = lb.locator(xpath)
             if not await container.count():
@@ -255,7 +255,7 @@ async def click_option(page: Page, label_keyword: str, option_text: str) -> bool
     )
     for i in range(await text_nodes.count()):
         node = text_nodes.nth(i)
-        for ancestor_level in range(1, 5):
+        for ancestor_level in range(1, 9):
             xpath = "xpath=ancestor::*[" + str(ancestor_level) + "]"
             container = node.locator(xpath)
             if not await container.count():
@@ -326,7 +326,7 @@ async def get_customer_list(page: Page) -> list[dict]:
                                     item["index"] = j
                                 return result
 
-        for ancestor_level in range(1, 5):
+        for ancestor_level in range(1, 9):
             xpath = "xpath=ancestor::*[" + str(ancestor_level) + "]"
             container = lb.locator(xpath)
             if not await container.count():
@@ -385,7 +385,7 @@ async def get_customer_list(page: Page) -> list[dict]:
     text_nodes = page.locator("xpath=//*[contains(normalize-space(text()), '고객사')]")
     for i in range(await text_nodes.count()):
         node = text_nodes.nth(i)
-        for ancestor_level in range(1, 5):
+        for ancestor_level in range(1, 9):
             xpath = "xpath=ancestor::*[" + str(ancestor_level) + "]"
             container = node.locator(xpath)
             if not await container.count():
@@ -440,19 +440,6 @@ async def get_customer_list(page: Page) -> list[dict]:
                     await page.keyboard.press("Escape")
                 except Exception:
                     pass
-
-    selects = page.locator("select")
-    for i in range(await selects.count()):
-        s = selects.nth(i)
-        opts = await s.locator("option").all()
-        texts = []
-        for opt in opts:
-            v = (await opt.get_attribute("value") or "").strip()
-            t = (await opt.text_content() or "").strip()
-            if v and v not in ("", "0", "all", "ALL"):
-                texts.append({"value": v, "text": t, "type": "native", "index": i})
-        if len(texts) > 1 and not all(re.fullmatch(r"\d+월", item["text"]) for item in texts):
-            return texts
 
     return []
 
