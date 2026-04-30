@@ -249,7 +249,34 @@ async def click_option(page: Page, label_keyword: str, option_text: str) -> bool
                     except Exception:
                         pass
 
-    # 4. global fallback
+    # 4. text node proximity fallback
+    text_nodes = page.locator(
+        f"xpath=//*[contains(normalize-space(text()), '{label_keyword}')]"
+    )
+    for i in range(await text_nodes.count()):
+        node = text_nodes.nth(i)
+        for ancestor_level in range(1, 5):
+            xpath = "xpath=ancestor::*[" + str(ancestor_level) + "]"
+            container = node.locator(xpath)
+            if not await container.count():
+                continue
+            container = container.first
+            for trig_sel in TRIGGER_SELECTORS:
+                triggers = container.locator(trig_sel)
+                for j in range(await triggers.count()):
+                    trig = triggers.nth(j)
+                    try:
+                        await trig.click(timeout=2000)
+                        await page.wait_for_timeout(400)
+                        opt = await _find_option_in_dom(page, option_text)
+                        if opt:
+                            await opt.click()
+                            return True
+                        await page.keyboard.press("Escape")
+                    except Exception:
+                        pass
+
+    # 5. global fallback
     for trig_sel in TRIGGER_SELECTORS:
         triggers = page.locator(trig_sel)
         for j in range(await triggers.count()):
@@ -302,6 +329,65 @@ async def get_customer_list(page: Page) -> list[dict]:
         for ancestor_level in range(1, 5):
             xpath = "xpath=ancestor::*[" + str(ancestor_level) + "]"
             container = lb.locator(xpath)
+            if not await container.count():
+                continue
+            container = container.first
+
+            native_selects = container.locator("select")
+            for j in range(await native_selects.count()):
+                select = native_selects.nth(j)
+                result = []
+                for opt in await select.locator("option").all():
+                    v = (await opt.get_attribute("value") or "").strip()
+                    t = (await opt.text_content() or "").strip()
+                    if v and v not in ("", "0", "all", "ALL"):
+                        result.append({"value": v, "text": t, "type": "native", "index": j})
+                if len(result) > 1 and not all(re.fullmatch(r"\d+월", item["text"]) for item in result):
+                    selects = page.locator("select")
+                    target_id = await select.get_attribute("id")
+                    target_name = await select.get_attribute("name")
+                    for k in range(await selects.count()):
+                        candidate = selects.nth(k)
+                        if (
+                            await candidate.get_attribute("id") == target_id
+                            and target_id is not None
+                        ) or (
+                            await candidate.get_attribute("name") == target_name
+                            and target_name is not None
+                        ):
+                            for item in result:
+                                item["index"] = k
+                            return result
+
+            for trig_sel in TRIGGER_SELECTORS:
+                trig = container.locator(trig_sel).first
+                if not await trig.count():
+                    continue
+                try:
+                    await trig.click(timeout=2000)
+                    await page.wait_for_timeout(500)
+                    result = []
+                    for opt_sel in OPTION_SELECTORS:
+                        opts = page.locator(opt_sel)
+                        cnt = await opts.count()
+                        if cnt > 1:
+                            for j in range(cnt):
+                                opt_txt = (await opts.nth(j).text_content() or "").strip()
+                                if opt_txt and opt_txt not in ("전체", "선택", "", "고객사"):
+                                    result.append({"value": opt_txt, "text": opt_txt, "type": "custom"})
+                            if result:
+                                await page.keyboard.press("Escape")
+                                return result
+                    await page.keyboard.press("Escape")
+                except Exception:
+                    pass
+
+    text_nodes = page.locator("xpath=//*[contains(normalize-space(text()), '고객사')]")
+    for i in range(await text_nodes.count()):
+        node = text_nodes.nth(i)
+        for ancestor_level in range(1, 5):
+            xpath = "xpath=ancestor::*[" + str(ancestor_level) + "]"
+            container = node.locator(xpath)
             if not await container.count():
                 continue
             container = container.first
