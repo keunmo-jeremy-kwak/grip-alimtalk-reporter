@@ -9,6 +9,10 @@ on:
         description: "수집 대상 일자 (YYYY-MM-DD, 비우면 KST 전일)"
         required: false
         type: string
+      test_customers:
+        description: "테스트 고객사 목록 (쉼표 구분, 예: 그립,그립 파트너센터)"
+        required: false
+        type: string
 
 jobs:
   collect:
@@ -37,6 +41,7 @@ jobs:
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
           GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
           TARGET_DATE: ${{ github.event_name == 'workflow_dispatch' && inputs.target_date || '' }}
+          TEST_CUSTOMERS: ${{ github.event_name == 'workflow_dispatch' && inputs.test_customers || '' }}
         run: python collect_stats.py
 
       - name: 디버그 스크린샷 업로드

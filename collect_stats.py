@@ -30,6 +30,11 @@ GCP_SCOPES     = [
 ]
 REPORT_TZ      = ZoneInfo("Asia/Seoul")
 TARGET_DATE    = os.environ.get("TARGET_DATE")
+TEST_CUSTOMERS = [
+    name.strip()
+    for name in os.environ.get("TEST_CUSTOMERS", "").split(",")
+    if name.strip()
+]
 
 
 # ── Google Sheets ─────────────────────────────────────────────────────────────
@@ -62,7 +67,10 @@ def upsert_rows(ws, rows: list[list]) -> None:
             continue
         date_value = row[0].strip()
         customer_value = row[1].strip()
-        if (date_value, customer_value) == ("date", "customer"):
+        if (date_value, customer_value) in {
+            ("date", "customer"),
+            ("일자", "채널명"),
+        }:
             continue
         if not date_value or not customer_value:
             continue
@@ -84,6 +92,25 @@ def upsert_rows(ws, rows: list[list]) -> None:
 
     if appends:
         ws.append_rows(appends, value_input_option="USER_ENTERED")
+
+
+def filter_customer_candidates(customers: list[dict]) -> list[dict]:
+    if not customers:
+        return []
+
+    filtered = []
+    seen = set()
+    for customer in customers:
+        text = customer["text"].strip()
+        if re.fullmatch(r"\d+월", text):
+            continue
+        if TEST_CUSTOMERS and text not in TEST_CUSTOMERS:
+            continue
+        if text in seen:
+            continue
+        filtered.append(customer)
+        seen.add(text)
+    return filtered
 
 
 # ── 로그인 ────────────────────────────────────────────────────────────────────
@@ -317,7 +344,8 @@ async def get_customer_list(page: Page) -> list[dict]:
                         t = (await opt.text_content() or "").strip()
                         if v and v not in ("", "0", "all", "ALL"):
                             result.append({"value": v, "text": t, "type": "native", "index": 0})
-                    if len(result) > 1:
+                    result = filter_customer_candidates(result)
+                    if len(result) > 0:
                         select_id = await native.get_attribute("id")
                         selects = page.locator("select")
                         for j in range(await selects.count()):
@@ -342,7 +370,8 @@ async def get_customer_list(page: Page) -> list[dict]:
                     t = (await opt.text_content() or "").strip()
                     if v and v not in ("", "0", "all", "ALL"):
                         result.append({"value": v, "text": t, "type": "native", "index": j})
-                if len(result) > 1 and not all(re.fullmatch(r"\d+월", item["text"]) for item in result):
+                result = filter_customer_candidates(result)
+                if len(result) > 0:
                     selects = page.locator("select")
                     target_id = await select.get_attribute("id")
                     target_name = await select.get_attribute("name")
@@ -375,6 +404,7 @@ async def get_customer_list(page: Page) -> list[dict]:
                                 opt_txt = (await opts.nth(j).text_content() or "").strip()
                                 if opt_txt and opt_txt not in ("전체", "선택", "", "고객사"):
                                     result.append({"value": opt_txt, "text": opt_txt, "type": "custom"})
+                            result = filter_customer_candidates(result)
                             if result:
                                 await page.keyboard.press("Escape")
                                 return result
@@ -401,7 +431,8 @@ async def get_customer_list(page: Page) -> list[dict]:
                     t = (await opt.text_content() or "").strip()
                     if v and v not in ("", "0", "all", "ALL"):
                         result.append({"value": v, "text": t, "type": "native", "index": j})
-                if len(result) > 1 and not all(re.fullmatch(r"\d+월", item["text"]) for item in result):
+                result = filter_customer_candidates(result)
+                if len(result) > 0:
                     selects = page.locator("select")
                     target_id = await select.get_attribute("id")
                     target_name = await select.get_attribute("name")
@@ -434,6 +465,7 @@ async def get_customer_list(page: Page) -> list[dict]:
                                 opt_txt = (await opts.nth(j).text_content() or "").strip()
                                 if opt_txt and opt_txt not in ("전체", "선택", "", "고객사"):
                                     result.append({"value": opt_txt, "text": opt_txt, "type": "custom"})
+                            result = filter_customer_candidates(result)
                             if result:
                                 await page.keyboard.press("Escape")
                                 return result
