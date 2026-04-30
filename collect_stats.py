@@ -270,31 +270,68 @@ async def click_option(page: Page, label_keyword: str, option_text: str) -> bool
 
 # ── 고객사 목록 수집 ───────────────────────────────────────────────────────────
 async def get_customer_list(page: Page) -> list[dict]:
-    selects = page.locator("select")
-    for i in range(await selects.count()):
-        s = selects.nth(i)
-        opts = await s.locator("option").all()
-        texts = []
-        for opt in opts:
-            v = (await opt.get_attribute("value") or "").strip()
-            t = (await opt.text_content() or "").strip()
-            if v and v not in ("", "0", "all", "ALL"):
-                texts.append({"value": v, "text": t, "type": "native", "index": i})
-        if len(texts) > 1:
-            return texts
-
     labels = page.locator("label")
     for i in range(await labels.count()):
         lb = labels.nth(i)
         txt = (await lb.text_content() or "").strip()
         if "고객사" not in txt:
             continue
+
+        for_id = await lb.get_attribute("for")
+        if for_id:
+            native = page.locator(f"#{for_id}")
+            if await native.count():
+                tag = await native.evaluate("el => el.tagName.toLowerCase()")
+                if tag == "select":
+                    opts = await native.locator("option").all()
+                    result = []
+                    for opt in opts:
+                        v = (await opt.get_attribute("value") or "").strip()
+                        t = (await opt.text_content() or "").strip()
+                        if v and v not in ("", "0", "all", "ALL"):
+                            result.append({"value": v, "text": t, "type": "native", "index": 0})
+                    if len(result) > 1:
+                        select_id = await native.get_attribute("id")
+                        selects = page.locator("select")
+                        for j in range(await selects.count()):
+                            if await selects.nth(j).get_attribute("id") == select_id:
+                                for item in result:
+                                    item["index"] = j
+                                return result
+
         for ancestor_level in range(1, 5):
             xpath = "xpath=ancestor::*[" + str(ancestor_level) + "]"
             container = lb.locator(xpath)
             if not await container.count():
                 continue
             container = container.first
+
+            native_selects = container.locator("select")
+            for j in range(await native_selects.count()):
+                select = native_selects.nth(j)
+                result = []
+                for opt in await select.locator("option").all():
+                    v = (await opt.get_attribute("value") or "").strip()
+                    t = (await opt.text_content() or "").strip()
+                    if v and v not in ("", "0", "all", "ALL"):
+                        result.append({"value": v, "text": t, "type": "native", "index": j})
+                if len(result) > 1 and not all(re.fullmatch(r"\d+월", item["text"]) for item in result):
+                    selects = page.locator("select")
+                    target_id = await select.get_attribute("id")
+                    target_name = await select.get_attribute("name")
+                    for k in range(await selects.count()):
+                        candidate = selects.nth(k)
+                        if (
+                            await candidate.get_attribute("id") == target_id
+                            and target_id is not None
+                        ) or (
+                            await candidate.get_attribute("name") == target_name
+                            and target_name is not None
+                        ):
+                            for item in result:
+                                item["index"] = k
+                            return result
+
             for trig_sel in TRIGGER_SELECTORS:
                 trig = container.locator(trig_sel).first
                 if not await trig.count():
@@ -317,6 +354,20 @@ async def get_customer_list(page: Page) -> list[dict]:
                     await page.keyboard.press("Escape")
                 except Exception:
                     pass
+
+    selects = page.locator("select")
+    for i in range(await selects.count()):
+        s = selects.nth(i)
+        opts = await s.locator("option").all()
+        texts = []
+        for opt in opts:
+            v = (await opt.get_attribute("value") or "").strip()
+            t = (await opt.text_content() or "").strip()
+            if v and v not in ("", "0", "all", "ALL"):
+                texts.append({"value": v, "text": t, "type": "native", "index": i})
+        if len(texts) > 1 and not all(re.fullmatch(r"\d+월", item["text"]) for item in texts):
+            return texts
+
     return []
 
 
