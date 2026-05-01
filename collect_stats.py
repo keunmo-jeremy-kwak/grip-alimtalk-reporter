@@ -185,6 +185,7 @@ async def login(page: Page) -> None:
 # ── 커스텀 드롭다운 클릭 헬퍼 ────────────────────────────────────────────────
 TRIGGER_SELECTORS = [
     "select",
+    '[role="combobox"]', '[aria-haspopup="listbox"]',
     ".el-select", ".el-select__wrapper",
     ".ant-select", ".ant-select-selector",
     "[class*='select']", "[class*='Select']",
@@ -207,13 +208,93 @@ async def _find_option_in_dom(page: Page, option_text: str):
         count = await locs.count()
         for i in range(count):
             loc = locs.nth(i)
+            try:
+                if not await loc.is_visible():
+                    continue
+            except Exception:
+                continue
             txt = (await loc.text_content() or "").strip()
             if txt == option_text:
                 return loc
     return None
 
 
+async def _find_trigger_near_keyword(page: Page, label_keyword: str):
+    label_nodes = page.locator(
+        "xpath="
+        f"//label[contains(normalize-space(.), '{label_keyword}')]"
+        f" | //span[normalize-space(.)='{label_keyword}']"
+        f" | //div[normalize-space(.)='{label_keyword}']"
+        f" | //strong[normalize-space(.)='{label_keyword}']"
+        f" | //th[normalize-space(.)='{label_keyword}']"
+        f" | //dt[normalize-space(.)='{label_keyword}']"
+    )
+
+    best = None
+    best_score = None
+
+    for i in range(await label_nodes.count()):
+        label = label_nodes.nth(i)
+        try:
+            if not await label.is_visible():
+                continue
+            label_box = await label.bounding_box()
+        except Exception:
+            continue
+        if not label_box:
+            continue
+
+        label_center_y = label_box["y"] + label_box["height"] / 2
+        label_right_x = label_box["x"] + label_box["width"]
+
+        for trig_sel in TRIGGER_SELECTORS:
+            triggers = page.locator(trig_sel)
+            for j in range(await triggers.count()):
+                trig = triggers.nth(j)
+                try:
+                    if not await trig.is_visible():
+                        continue
+                    trig_box = await trig.bounding_box()
+                except Exception:
+                    continue
+                if not trig_box:
+                    continue
+                if trig_box["width"] < 80 or trig_box["height"] < 20:
+                    continue
+
+                trig_center_y = trig_box["y"] + trig_box["height"] / 2
+                if trig_box["x"] + 10 < label_right_x:
+                    continue
+                if abs(trig_center_y - label_center_y) > 70:
+                    continue
+
+                score = (
+                    abs(trig_center_y - label_center_y),
+                    trig_box["x"] - label_right_x,
+                    trig_box["width"],
+                )
+                if best_score is None or score < best_score:
+                    best = trig
+                    best_score = score
+
+    return best
+
+
 async def click_option(page: Page, label_keyword: str, option_text: str) -> bool:
+    # 0. visible trigger nearest to keyword
+    trigger = await _find_trigger_near_keyword(page, label_keyword)
+    if trigger:
+        try:
+            await trigger.click(timeout=2000)
+            await page.wait_for_timeout(400)
+            opt = await _find_option_in_dom(page, option_text)
+            if opt:
+                await opt.click()
+                return True
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
+
     # 1. native select via label
     labels = page.locator("label")
     for i in range(await labels.count()):
@@ -324,6 +405,10 @@ async def click_option(page: Page, label_keyword: str, option_text: str) -> bool
 
 # ── 고객사 목록 수집 ───────────────────────────────────────────────────────────
 async def get_customer_list(page: Page) -> list[dict]:
+    if TEST_CUSTOMERS:
+        print(f"  테스트 고객사 모드: {TEST_CUSTOMERS}")
+        return [{"value": name, "text": name, "type": "custom"} for name in TEST_CUSTOMERS]
+
     labels = page.locator("label")
     for i in range(await labels.count()):
         lb = labels.nth(i)
